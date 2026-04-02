@@ -11,6 +11,7 @@ from pathlib import Path
 class CalendarInfo:
     """Metadata describing an available Calendar calendar."""
 
+    calendar_id: str
     name: str
     color: str | None = None
     is_default: bool = False

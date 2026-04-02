@@ -10,22 +10,31 @@ from menu_calendario_mcp.macos.calendar import CalendarService
 class StubCalendarRunner(AppleScriptRunner):
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.calendars = [{"name": "Home", "color": "red"}]
 
     def run_json(self, script: str) -> object:
         self.calls.append(script)
         data = _embedded_payload(script)
-        if "Calendar already exists" in script:
+        if "const result = calendar.calendars().map" in script:
+            return list(self.calendars)
+        if "const calendar = app.Calendar({name: payload.name});" in script:
+            row = {"name": data["name"], "color": "blue"}
+            self.calendars.append(row)
             return {
-                "name": data.get("new_name", data.get("name", data.get("calendar_name", "Home"))),
-                "color": "red",
-                "is_default": False,
+                "name": row["name"],
+                "color": row["color"],
             }
         if "deleted" in script:
-            if "calendar_name" in data:
-                return {"deleted": True, "calendar_name": data["calendar_name"]}
+            if "calendar_index" in data:
+                del self.calendars[data["calendar_index"]]
+                return {"deleted": True, "calendar_id": data["calendar_index"]}
             return {"deleted": True, "event_id": data["event_id"]}
-        if "calendars().map" in script:
-            return [{"name": "Home", "color": "red", "is_default": True}]
+        if "calendar.no longer matches" in script or "currentName !== payload.expected_name" in script:
+            self.calendars[data["calendar_index"]]["name"] = data["new_name"]
+            return {
+                "name": self.calendars[data["calendar_index"]]["name"],
+                "color": self.calendars[data["calendar_index"]]["color"],
+            }
         if "const events = [];" in script:
             return [
                 {
@@ -52,10 +61,11 @@ class StubCalendarRunner(AppleScriptRunner):
 
 
 def test_list_calendars_returns_models() -> None:
-    service = CalendarService(runner=StubCalendarRunner())
+    service = CalendarService(runner=StubCalendarRunner(), default_calendar_name="Home")
     calendars = service.list_calendars()
     assert calendars[0].name == "Home"
     assert calendars[0].is_default is True
+    assert calendars[0].calendar_id
 
 
 def test_create_calendar_requires_name() -> None:
@@ -67,19 +77,19 @@ def test_create_calendar_requires_name() -> None:
 def test_update_calendar_requires_name() -> None:
     service = CalendarService(runner=StubCalendarRunner())
     with pytest.raises(ValidationError):
-        service.update_calendar(calendar_name="", new_name="Renamed")
+        service.update_calendar(calendar_id="", new_name="Renamed")
 
 
 def test_update_calendar_requires_fields() -> None:
     service = CalendarService(runner=StubCalendarRunner())
     with pytest.raises(ValidationError):
-        service.update_calendar(calendar_name="Home")
+        service.update_calendar(calendar_id="bad", new_name=None)
 
 
 def test_delete_calendar_requires_name() -> None:
     service = CalendarService(runner=StubCalendarRunner())
     with pytest.raises(ValidationError):
-        service.delete_calendar(calendar_name="")
+        service.delete_calendar(calendar_id="")
 
 
 def test_list_events_uses_overlap_filter_in_script() -> None:
@@ -134,18 +144,22 @@ def test_create_calendar_returns_info() -> None:
     service = CalendarService(runner=StubCalendarRunner())
     result = service.create_calendar(name="Travel")
     assert result.name == "Travel"
+    assert result.calendar_id
 
 
 def test_update_calendar_returns_info() -> None:
     service = CalendarService(runner=StubCalendarRunner())
-    result = service.update_calendar(calendar_name="Travel", new_name="Trips")
+    created = service.create_calendar(name="Travel")
+    result = service.update_calendar(calendar_id=created.calendar_id, new_name="Trips")
     assert result.name == "Trips"
+    assert result.calendar_id != created.calendar_id
 
 
 def test_delete_calendar_returns_confirmation() -> None:
     service = CalendarService(runner=StubCalendarRunner())
-    result = service.delete_calendar(calendar_name="Travel")
-    assert result == {"deleted": True, "calendar_name": "Travel"}
+    created = service.create_calendar(name="Travel")
+    result = service.delete_calendar(calendar_id=created.calendar_id)
+    assert result == {"deleted": True, "calendar_id": 1}
 
 
 def _embedded_payload(script: str) -> dict[str, object]:

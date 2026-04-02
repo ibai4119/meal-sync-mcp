@@ -82,7 +82,8 @@ MENU_CALENDARIO_DEFAULT_REMINDER_LIST = "Recordatorios"
 ## Notas
 
 - `Calendar` modifica y borra eventos solo por `event_id`.
-- `Calendar` crea, renombra y borra calendarios por `calendar_name` exacto.
+- `Calendar` crea calendarios por nombre y los renombra/borra por `calendar_id` opaco devuelto por `calendar_list_calendars`.
+- Si cambia el conjunto u orden de calendarios entre el listado y la mutación, vuelve a listar antes de reintentar.
 - `Reminders` completa recordatorios solo por `reminder_id`.
 - El listado de recordatorios devuelve solo pendientes por defecto.
 - `Finder` solo admite rutas absolutas.

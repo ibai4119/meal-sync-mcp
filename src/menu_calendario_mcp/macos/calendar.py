@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import dataclass
+from typing import Any
 
 from ..errors import ConflictError, NotFoundError, ValidationError
 from ..models import CalendarEvent, CalendarInfo
@@ -19,6 +22,50 @@ def _clean_text(value: object) -> str | None:
     return text or None
 
 
+def _encode_calendar_id(*, index: int, name: str, color: str | None) -> str:
+    payload = {"index": index, "name": name, "color": color}
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _decode_calendar_id(calendar_id: str) -> dict[str, Any]:
+    clean_calendar_id = _clean_text(calendar_id)
+    if not clean_calendar_id:
+        raise ValidationError("'calendar_id' is required")
+    try:
+        raw = base64.urlsafe_b64decode(clean_calendar_id.encode("ascii"))
+        payload = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValidationError("'calendar_id' is invalid") from exc
+    if not isinstance(payload, dict):
+        raise ValidationError("'calendar_id' is invalid")
+    if not isinstance(payload.get("index"), int):
+        raise ValidationError("'calendar_id' is invalid")
+    if not isinstance(payload.get("name"), str):
+        raise ValidationError("'calendar_id' is invalid")
+    if payload.get("color") is not None and not isinstance(payload.get("color"), str):
+        raise ValidationError("'calendar_id' is invalid")
+    return payload
+
+
+def _calendar_signature(row: dict[str, object]) -> tuple[object, object]:
+    return (row.get("name"), row.get("color"))
+
+
+def _find_inserted_calendar_index(
+    before_rows: list[dict[str, object]], after_rows: list[dict[str, object]]
+) -> int:
+    """Locate the single inserted calendar between two ordered calendar listings."""
+
+    before_signatures = [_calendar_signature(row) for row in before_rows]
+    after_signatures = [_calendar_signature(row) for row in after_rows]
+    for index in range(len(after_signatures)):
+        candidate = after_signatures[:index] + after_signatures[index + 1 :]
+        if candidate == before_signatures:
+            return index
+    raise ConflictError("Calendar creation did not produce an identifiable new calendar.")
+
+
 @dataclass(slots=True)
 class CalendarService:
     """High-level Calendar.app operations exposed through MCP tools."""
@@ -26,10 +73,9 @@ class CalendarService:
     runner: AppleScriptRunner
     default_calendar_name: str | None = None
 
-    def list_calendars(self) -> list[CalendarInfo]:
-        """Return the calendars visible to the current macOS user."""
+    def _list_calendar_rows(self) -> list[dict[str, object]]:
+        """Return raw calendar rows in Calendar.app order."""
 
-        payload = {"default_calendar_name": self.default_calendar_name}
         script = jxa_program(
             """
   const calendar = Application('Calendar');
@@ -37,14 +83,36 @@ class CalendarService:
   const result = calendar.calendars().map(c => ({
     name: c.name(),
     color: c.color ? String(c.color()) : null,
-    is_default: payload.default_calendar_name ? payload.default_calendar_name === c.name() : false,
   }));
   return toJson(result);
-""",
-            payload,
+"""
         )
         rows = self.runner.run_json(script)
-        return [CalendarInfo(**row) for row in rows]
+        if not isinstance(rows, list):
+            raise ValidationError("Calendar listing returned an invalid payload.")
+        return rows
+
+    def _calendar_info_from_row(self, row: dict[str, object], *, index: int) -> CalendarInfo:
+        """Build a `CalendarInfo` instance with an opaque calendar identifier."""
+
+        name = row["name"]
+        color = row.get("color")
+        if not isinstance(name, str):
+            raise ValidationError("Calendar listing returned an invalid name.")
+        if color is not None and not isinstance(color, str):
+            raise ValidationError("Calendar listing returned an invalid color.")
+        return CalendarInfo(
+            calendar_id=_encode_calendar_id(index=index, name=name, color=color),
+            name=name,
+            color=color,
+            is_default=bool(self.default_calendar_name and self.default_calendar_name == name),
+        )
+
+    def list_calendars(self) -> list[CalendarInfo]:
+        """Return the calendars visible to the current macOS user."""
+
+        rows = self._list_calendar_rows()
+        return [self._calendar_info_from_row(row, index=index) for index, row in enumerate(rows)]
 
     def create_calendar(self, *, name: str) -> CalendarInfo:
         """Create a new calendar with the given name."""
@@ -53,99 +121,112 @@ class CalendarService:
         if not clean_name:
             raise ValidationError("'name' is required")
 
+        before_rows = self._list_calendar_rows()
         payload = {"name": clean_name}
         script = jxa_program(
             """
   const app = Application('Calendar');
   app.includeStandardAdditions = true;
-  const existing = app.calendars.whose({name: payload.name})();
-  if (existing.length > 0) {
-    throw new Error(`Calendar already exists: ${payload.name}`);
-  }
   const calendar = app.Calendar({name: payload.name});
   app.calendars.push(calendar);
   return toJson({
     name: calendar.name(),
     color: calendar.color ? String(calendar.color()) : null,
-    is_default: payload.name === payload.default_calendar_name,
   });
 """,
-            {
-                **payload,
-                "default_calendar_name": self.default_calendar_name,
-            },
+            payload,
         )
         row = self.runner.run_json(script)
-        return CalendarInfo(**row)
+        if not isinstance(row, dict):
+            raise ValidationError("Calendar creation returned an invalid payload.")
+        after_rows = self._list_calendar_rows()
+        if len(after_rows) != len(before_rows) + 1:
+            raise ConflictError("Calendar creation did not produce a single new calendar.")
+        index = _find_inserted_calendar_index(before_rows, after_rows)
+        candidate = after_rows[index]
+        return self._calendar_info_from_row(candidate, index=index)
 
-    def update_calendar(self, *, calendar_name: str, new_name: str | None = None) -> CalendarInfo:
-        """Update mutable fields on an existing calendar identified by `calendar_name`."""
+    def update_calendar(self, *, calendar_id: str, new_name: str | None = None) -> CalendarInfo:
+        """Update mutable fields on an existing calendar identified by `calendar_id`."""
 
-        clean_calendar_name = _clean_text(calendar_name)
-        if not clean_calendar_name:
-            raise ValidationError("'calendar_name' is required")
+        calendar_ref = _decode_calendar_id(calendar_id)
         clean_new_name = _clean_text(new_name)
         if clean_new_name is None:
             raise ValidationError("At least one field must be provided to update a calendar.")
 
         payload = {
-            "calendar_name": clean_calendar_name,
+            "calendar_index": calendar_ref["index"],
+            "expected_name": calendar_ref["name"],
+            "expected_color": calendar_ref["color"],
             "new_name": clean_new_name,
-            "default_calendar_name": self.default_calendar_name,
         }
         script = jxa_program(
             """
   const app = Application('Calendar');
   app.includeStandardAdditions = true;
-  const calendars = app.calendars.whose({name: payload.calendar_name})();
-  if (calendars.length === 0) {
-    throw new Error(`Calendar not found: ${payload.calendar_name}`);
+  const calendars = app.calendars();
+  if (payload.calendar_index < 0 || payload.calendar_index >= calendars.length) {
+    throw new Error('Calendar not found for the provided calendar_id');
   }
-  if (payload.new_name !== null && payload.new_name !== payload.calendar_name) {
-    const duplicates = app.calendars.whose({name: payload.new_name})();
-    if (duplicates.length > 0) {
-      throw new Error(`Calendar already exists: ${payload.new_name}`);
-    }
+  const calendar = calendars[payload.calendar_index];
+  const currentName = calendar.name();
+  const currentColor = calendar.color ? String(calendar.color()) : null;
+  if (currentName !== payload.expected_name || currentColor !== payload.expected_color) {
+    throw new Error('Calendar no longer matches the provided calendar_id. Refresh the calendar list and try again.');
   }
-  const calendar = calendars[0];
   if (payload.new_name !== null) {
     calendar.name = payload.new_name;
   }
   return toJson({
     name: calendar.name(),
     color: calendar.color ? String(calendar.color()) : null,
-    is_default: payload.default_calendar_name ? payload.default_calendar_name === calendar.name() : false,
   });
 """,
             payload,
         )
         row = self.runner.run_json(script)
-        return CalendarInfo(**row)
+        if not isinstance(row, dict):
+            raise ValidationError("Calendar update returned an invalid payload.")
+        refreshed_rows = self._list_calendar_rows()
+        target_index = calendar_ref["index"]
+        if target_index >= len(refreshed_rows):
+            raise NotFoundError("Updated calendar not found after mutation.")
+        return self._calendar_info_from_row(refreshed_rows[target_index], index=target_index)
 
-    def delete_calendar(self, *, calendar_name: str) -> dict[str, object]:
-        """Delete a calendar by its exact name."""
+    def delete_calendar(self, *, calendar_id: str) -> dict[str, object]:
+        """Delete a calendar by its opaque `calendar_id`."""
 
-        clean_calendar_name = _clean_text(calendar_name)
-        if not clean_calendar_name:
-            raise ValidationError("'calendar_name' is required")
+        calendar_ref = _decode_calendar_id(calendar_id)
 
-        payload = {"calendar_name": clean_calendar_name}
+        payload = {
+            "calendar_index": calendar_ref["index"],
+            "expected_name": calendar_ref["name"],
+            "expected_color": calendar_ref["color"],
+        }
         script = jxa_program(
             """
   const app = Application('Calendar');
   app.includeStandardAdditions = true;
-  const calendars = app.calendars.whose({name: payload.calendar_name})();
-  if (calendars.length === 0) {
-    throw new Error(`Calendar not found: ${payload.calendar_name}`);
+  const calendars = app.calendars();
+  if (payload.calendar_index < 0 || payload.calendar_index >= calendars.length) {
+    throw new Error('Calendar not found for the provided calendar_id');
   }
-  app.calendars.byName(payload.calendar_name).delete();
-  return toJson({deleted: true, calendar_name: payload.calendar_name});
+  const calendar = calendars[payload.calendar_index];
+  const currentName = calendar.name();
+  const currentColor = calendar.color ? String(calendar.color()) : null;
+  if (currentName !== payload.expected_name || currentColor !== payload.expected_color) {
+    throw new Error('Calendar no longer matches the provided calendar_id. Refresh the calendar list and try again.');
+  }
+  const temporaryName = `__codex_delete__${ObjC.unwrap($.NSUUID.UUID.UUIDString)}`;
+  calendar.name = temporaryName;
+  app.calendars.byName(temporaryName).delete();
+  return toJson({deleted: true, calendar_id: payload.calendar_index});
 """,
             payload,
         )
         row = self.runner.run_json(script)
         if not row.get("deleted"):
-            raise NotFoundError(f"Calendar not found: {clean_calendar_name}")
+            raise NotFoundError("Calendar not found for the provided calendar_id")
         return row
 
     def list_events(
