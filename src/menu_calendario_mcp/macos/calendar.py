@@ -29,18 +29,19 @@ class CalendarService:
     def list_calendars(self) -> list[CalendarInfo]:
         """Return the calendars visible to the current macOS user."""
 
+        payload = {"default_calendar_name": self.default_calendar_name}
         script = jxa_program(
             """
   const calendar = Application('Calendar');
   calendar.includeStandardAdditions = true;
-  const defaultName = calendar.defaultCalendar ? calendar.defaultCalendar.name() : null;
   const result = calendar.calendars().map(c => ({
     name: c.name(),
     color: c.color ? String(c.color()) : null,
-    is_default: defaultName === c.name(),
+    is_default: payload.default_calendar_name ? payload.default_calendar_name === c.name() : false,
   }));
   return toJson(result);
-"""
+""",
+            payload,
         )
         rows = self.runner.run_json(script)
         return [CalendarInfo(**row) for row in rows]
