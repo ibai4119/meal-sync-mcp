@@ -91,6 +91,43 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={"type": "object", "properties": {}},
         ),
         types.Tool(
+            name="calendar_create_calendar",
+            description="Create a macOS Calendar calendar using an exact name.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        ),
+        types.Tool(
+            name="calendar_update_calendar",
+            description="Update a macOS Calendar calendar using its exact current name.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "calendar_name": {"type": "string"},
+                    "new_name": {"type": "string"},
+                },
+                "required": ["calendar_name"],
+                "additionalProperties": False,
+            },
+        ),
+        types.Tool(
+            name="calendar_delete_calendar",
+            description="Delete a macOS Calendar calendar using its exact name.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "calendar_name": {"type": "string"},
+                },
+                "required": ["calendar_name"],
+                "additionalProperties": False,
+            },
+        ),
+        types.Tool(
             name="calendar_list_events",
             description="List Calendar events inside a bounded time range, optionally filtering by calendar and text query.",
             inputSchema={
@@ -240,6 +277,19 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResul
             case "calendar_list_calendars":
                 items = [item.to_dict() for item in services.calendar.list_calendars()]
                 return _success(items)
+            case "calendar_create_calendar":
+                calendar = services.calendar.create_calendar(name=arguments["name"])
+                return _success(calendar.to_dict())
+            case "calendar_update_calendar":
+                calendar = services.calendar.update_calendar(
+                    calendar_name=arguments["calendar_name"],
+                    new_name=arguments.get("new_name"),
+                )
+                return _success(calendar.to_dict())
+            case "calendar_delete_calendar":
+                return _success(
+                    services.calendar.delete_calendar(calendar_name=arguments["calendar_name"])
+                )
             case "calendar_list_events":
                 items = [
                     item.to_dict()

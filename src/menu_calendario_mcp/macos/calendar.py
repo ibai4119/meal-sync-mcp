@@ -46,6 +46,108 @@ class CalendarService:
         rows = self.runner.run_json(script)
         return [CalendarInfo(**row) for row in rows]
 
+    def create_calendar(self, *, name: str) -> CalendarInfo:
+        """Create a new calendar with the given name."""
+
+        clean_name = _clean_text(name)
+        if not clean_name:
+            raise ValidationError("'name' is required")
+
+        payload = {"name": clean_name}
+        script = jxa_program(
+            """
+  const app = Application('Calendar');
+  app.includeStandardAdditions = true;
+  const existing = app.calendars.whose({name: payload.name})();
+  if (existing.length > 0) {
+    throw new Error(`Calendar already exists: ${payload.name}`);
+  }
+  const calendar = app.Calendar({name: payload.name});
+  app.calendars.push(calendar);
+  return toJson({
+    name: calendar.name(),
+    color: calendar.color ? String(calendar.color()) : null,
+    is_default: payload.name === payload.default_calendar_name,
+  });
+""",
+            {
+                **payload,
+                "default_calendar_name": self.default_calendar_name,
+            },
+        )
+        row = self.runner.run_json(script)
+        return CalendarInfo(**row)
+
+    def update_calendar(self, *, calendar_name: str, new_name: str | None = None) -> CalendarInfo:
+        """Update mutable fields on an existing calendar identified by `calendar_name`."""
+
+        clean_calendar_name = _clean_text(calendar_name)
+        if not clean_calendar_name:
+            raise ValidationError("'calendar_name' is required")
+        clean_new_name = _clean_text(new_name)
+        if clean_new_name is None:
+            raise ValidationError("At least one field must be provided to update a calendar.")
+
+        payload = {
+            "calendar_name": clean_calendar_name,
+            "new_name": clean_new_name,
+            "default_calendar_name": self.default_calendar_name,
+        }
+        script = jxa_program(
+            """
+  const app = Application('Calendar');
+  app.includeStandardAdditions = true;
+  const calendars = app.calendars.whose({name: payload.calendar_name})();
+  if (calendars.length === 0) {
+    throw new Error(`Calendar not found: ${payload.calendar_name}`);
+  }
+  if (payload.new_name !== null && payload.new_name !== payload.calendar_name) {
+    const duplicates = app.calendars.whose({name: payload.new_name})();
+    if (duplicates.length > 0) {
+      throw new Error(`Calendar already exists: ${payload.new_name}`);
+    }
+  }
+  const calendar = calendars[0];
+  if (payload.new_name !== null) {
+    calendar.name = payload.new_name;
+  }
+  return toJson({
+    name: calendar.name(),
+    color: calendar.color ? String(calendar.color()) : null,
+    is_default: payload.default_calendar_name ? payload.default_calendar_name === calendar.name() : false,
+  });
+""",
+            payload,
+        )
+        row = self.runner.run_json(script)
+        return CalendarInfo(**row)
+
+    def delete_calendar(self, *, calendar_name: str) -> dict[str, object]:
+        """Delete a calendar by its exact name."""
+
+        clean_calendar_name = _clean_text(calendar_name)
+        if not clean_calendar_name:
+            raise ValidationError("'calendar_name' is required")
+
+        payload = {"calendar_name": clean_calendar_name}
+        script = jxa_program(
+            """
+  const app = Application('Calendar');
+  app.includeStandardAdditions = true;
+  const calendars = app.calendars.whose({name: payload.calendar_name})();
+  if (calendars.length === 0) {
+    throw new Error(`Calendar not found: ${payload.calendar_name}`);
+  }
+  app.calendars.byName(payload.calendar_name).delete();
+  return toJson({deleted: true, calendar_name: payload.calendar_name});
+""",
+            payload,
+        )
+        row = self.runner.run_json(script)
+        if not row.get("deleted"):
+            raise NotFoundError(f"Calendar not found: {clean_calendar_name}")
+        return row
+
     def list_events(
         self,
         *,

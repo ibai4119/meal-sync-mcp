@@ -5,6 +5,9 @@ Servidor MCP local para macOS con herramientas de `Calendar`, `Reminders` y `Fin
 ## Qué incluye
 
 - `calendar_list_calendars`
+- `calendar_create_calendar`
+- `calendar_update_calendar`
+- `calendar_delete_calendar`
 - `calendar_list_events`
 - `calendar_create_event`
 - `calendar_update_event`
@@ -79,6 +82,7 @@ MENU_CALENDARIO_DEFAULT_REMINDER_LIST = "Recordatorios"
 ## Notas
 
 - `Calendar` modifica y borra eventos solo por `event_id`.
+- `Calendar` crea, renombra y borra calendarios por `calendar_name` exacto.
 - `Reminders` completa recordatorios solo por `reminder_id`.
 - El listado de recordatorios devuelve solo pendientes por defecto.
 - `Finder` solo admite rutas absolutas.

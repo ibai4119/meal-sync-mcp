@@ -17,6 +17,9 @@ async def test_list_tools_includes_reminders_tools() -> None:
 
     tools = await list_tools()
     names = {tool.name for tool in tools}
+    assert "calendar_create_calendar" in names
+    assert "calendar_update_calendar" in names
+    assert "calendar_delete_calendar" in names
     assert "reminders_list_lists" in names
     assert "reminders_list_items" in names
     assert "reminders_create_item" in names
