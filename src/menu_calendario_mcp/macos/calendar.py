@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..errors import ConflictError, NotFoundError, ValidationError
-from ..models import CalendarEvent, CalendarInfo
+from ..models import CalendarEvent, CalendarInfo, CalendarSourceInfo
 from ..utils import validate_time_range
 from .applescript import AppleScriptRunner, jxa_program
+from .eventkit import EventKitCalendarManager
 
 
 def _clean_text(value: object) -> str | None:
@@ -72,6 +73,7 @@ class CalendarService:
 
     runner: AppleScriptRunner
     default_calendar_name: str | None = None
+    eventkit: EventKitCalendarManager | None = None
 
     def _list_calendar_rows(self) -> list[dict[str, object]]:
         """Return raw calendar rows in Calendar.app order."""
@@ -108,13 +110,19 @@ class CalendarService:
             is_default=bool(self.default_calendar_name and self.default_calendar_name == name),
         )
 
+    def list_sources(self) -> list[CalendarSourceInfo]:
+        """Return EventKit calendar sources available for source-aware calendar creation."""
+
+        manager = self.eventkit or EventKitCalendarManager()
+        return manager.list_sources()
+
     def list_calendars(self) -> list[CalendarInfo]:
         """Return the calendars visible to the current macOS user."""
 
         rows = self._list_calendar_rows()
         return [self._calendar_info_from_row(row, index=index) for index, row in enumerate(rows)]
 
-    def create_calendar(self, *, name: str) -> CalendarInfo:
+    def create_calendar(self, *, name: str, source_id: str | None = None) -> CalendarInfo:
         """Create a new calendar with the given name."""
 
         clean_name = _clean_text(name)
@@ -122,9 +130,14 @@ class CalendarService:
             raise ValidationError("'name' is required")
 
         before_rows = self._list_calendar_rows()
-        payload = {"name": clean_name}
-        script = jxa_program(
-            """
+        clean_source_id = _clean_text(source_id)
+        if clean_source_id:
+            manager = self.eventkit or EventKitCalendarManager()
+            manager.create_calendar(name=clean_name, source_id=clean_source_id)
+        else:
+            payload = {"name": clean_name}
+            script = jxa_program(
+                """
   const app = Application('Calendar');
   app.includeStandardAdditions = true;
   const calendar = app.Calendar({name: payload.name});
@@ -134,11 +147,11 @@ class CalendarService:
     color: calendar.color ? String(calendar.color()) : null,
   });
 """,
-            payload,
-        )
-        row = self.runner.run_json(script)
-        if not isinstance(row, dict):
-            raise ValidationError("Calendar creation returned an invalid payload.")
+                payload,
+            )
+            row = self.runner.run_json(script)
+            if not isinstance(row, dict):
+                raise ValidationError("Calendar creation returned an invalid payload.")
         after_rows = self._list_calendar_rows()
         if len(after_rows) != len(before_rows) + 1:
             raise ConflictError("Calendar creation did not produce a single new calendar.")

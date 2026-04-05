@@ -9,6 +9,8 @@ authors = [
 requires-python = ">=3.14"
 dependencies = [
     "mcp>=1.26.0",
+    "pyobjc-core>=11.1; sys_platform == 'darwin'",
+    "pyobjc-framework-EventKit>=11.1; sys_platform == 'darwin'",
 ]
 
 [project.scripts]

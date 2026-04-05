@@ -1,6 +1,7 @@
 import anyio
 import pytest
 
+from menu_calendario_mcp.models import CalendarSourceInfo
 from menu_calendario_mcp.server import build_services, call_tool
 
 
@@ -18,6 +19,7 @@ async def test_list_tools_includes_reminders_tools() -> None:
     tools = await list_tools()
     names = {tool.name for tool in tools}
     assert "calendar_create_calendar" in names
+    assert "calendar_list_sources" in names
     assert "calendar_update_calendar" in names
     assert "calendar_delete_calendar" in names
     assert "reminders_list_lists" in names
@@ -40,3 +42,40 @@ def test_build_services_reads_current_environment(monkeypatch: pytest.MonkeyPatc
 
     assert services.calendar.default_calendar_name == "Work"
     assert services.reminders.default_list_name == "Today"
+
+
+@pytest.mark.anyio
+async def test_calendar_list_sources_returns_structured_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCalendarService:
+        def list_sources(self) -> list[CalendarSourceInfo]:
+            return [
+                CalendarSourceInfo(
+                    source_id="icloud",
+                    title="iCloud",
+                    source_type="caldav",
+                    allows_calendar_creation=True,
+                )
+            ]
+
+    class FakeServices:
+        calendar = FakeCalendarService()
+        finder = None
+        reminders = None
+
+    monkeypatch.setattr("menu_calendario_mcp.server.build_services", lambda: FakeServices())
+
+    result = await call_tool("calendar_list_sources", {})
+
+    assert result.isError is False
+    assert result.structuredContent == {
+        "items": [
+            {
+                "source_id": "icloud",
+                "title": "iCloud",
+                "source_type": "caldav",
+                "allows_calendar_creation": True,
+            }
+        ]
+    }

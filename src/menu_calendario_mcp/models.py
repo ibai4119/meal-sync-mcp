@@ -15,6 +15,23 @@ class CalendarInfo:
     name: str
     color: str | None = None
     is_default: bool = False
+    source_id: str | None = None
+    source_title: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize the model to a plain dictionary for MCP responses."""
+
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class CalendarSourceInfo:
+    """Metadata describing a calendar source/account destination."""
+
+    source_id: str
+    title: str
+    source_type: str
+    allows_calendar_creation: bool
 
     def to_dict(self) -> dict[str, object]:
         """Serialize the model to a plain dictionary for MCP responses."""

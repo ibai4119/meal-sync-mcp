@@ -5,6 +5,7 @@ import pytest
 from menu_calendario_mcp.errors import ConflictError, NotFoundError, ValidationError
 from menu_calendario_mcp.macos.applescript import AppleScriptRunner
 from menu_calendario_mcp.macos.calendar import CalendarService
+from menu_calendario_mcp.models import CalendarSourceInfo
 
 
 class StubCalendarRunner(AppleScriptRunner):
@@ -58,6 +59,27 @@ class StubCalendarRunner(AppleScriptRunner):
             "location": data.get("location"),
             "notes": data.get("notes"),
         }
+
+
+class StubEventKitManager:
+    def __init__(self, runner: StubCalendarRunner | None = None) -> None:
+        self.create_calls: list[tuple[str, str]] = []
+        self.runner = runner
+
+    def list_sources(self) -> list[CalendarSourceInfo]:
+        return [
+            CalendarSourceInfo(
+                source_id="icloud",
+                title="iCloud",
+                source_type="caldav",
+                allows_calendar_creation=True,
+            )
+        ]
+
+    def create_calendar(self, *, name: str, source_id: str) -> None:
+        self.create_calls.append((name, source_id))
+        if self.runner is not None:
+            self.runner.calendars.append({"name": name, "color": "blue"})
 
 
 def test_list_calendars_returns_models() -> None:
@@ -145,6 +167,35 @@ def test_create_calendar_returns_info() -> None:
     result = service.create_calendar(name="Travel")
     assert result.name == "Travel"
     assert result.calendar_id
+
+
+def test_list_sources_delegates_to_eventkit() -> None:
+    manager = StubEventKitManager()
+    service = CalendarService(runner=StubCalendarRunner(), eventkit=manager)
+
+    result = service.list_sources()
+
+    assert result == [
+        CalendarSourceInfo(
+            source_id="icloud",
+            title="iCloud",
+            source_type="caldav",
+            allows_calendar_creation=True,
+        )
+    ]
+
+
+def test_create_calendar_uses_source_id_when_provided() -> None:
+    runner = StubCalendarRunner()
+    manager = StubEventKitManager(runner=runner)
+    service = CalendarService(runner=runner, eventkit=manager)
+
+    result = service.create_calendar(name="Travel", source_id="icloud")
+
+    assert manager.create_calls == [("Travel", "icloud")]
+    assert result.name == "Travel"
+    assert result.calendar_id
+    assert all("app.Calendar({name: payload.name})" not in call for call in runner.calls)
 
 
 def test_update_calendar_returns_info() -> None:

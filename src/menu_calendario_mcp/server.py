@@ -92,15 +92,21 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="calendar_create_calendar",
-            description="Create a macOS Calendar calendar using an exact name.",
+            description="Create a macOS Calendar calendar using an exact name, optionally in a specific source_id.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "name": {"type": "string"},
+                    "source_id": {"type": "string"},
                 },
                 "required": ["name"],
                 "additionalProperties": False,
             },
+        ),
+        types.Tool(
+            name="calendar_list_sources",
+            description="List available calendar sources/accounts and whether they allow calendar creation.",
+            inputSchema={"type": "object", "properties": {}},
         ),
         types.Tool(
             name="calendar_update_calendar",
@@ -278,8 +284,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResul
                 items = [item.to_dict() for item in services.calendar.list_calendars()]
                 return _success(items)
             case "calendar_create_calendar":
-                calendar = services.calendar.create_calendar(name=arguments["name"])
+                calendar = services.calendar.create_calendar(
+                    name=arguments["name"],
+                    source_id=arguments.get("source_id"),
+                )
                 return _success(calendar.to_dict())
+            case "calendar_list_sources":
+                items = [item.to_dict() for item in services.calendar.list_sources()]
+                return _success(items)
             case "calendar_update_calendar":
                 calendar = services.calendar.update_calendar(
                     calendar_id=arguments["calendar_id"],
